@@ -23,9 +23,21 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK
+      - name: Find and Build APK
         run: |
-          chmod +x gradlew
+          GRADLEW=$(find . -type f -name gradlew | head -n 1)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERRO: arquivo gradlew não encontrado."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+
+          echo "Projeto encontrado em: $PROJECT_DIR"
+
+          chmod +x "$GRADLEW"
+          cd "$PROJECT_DIR"
           ./gradlew assembleDebug
 
       - name: Upload APK
