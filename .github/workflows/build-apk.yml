@@ -21,14 +21,12 @@ jobs:
           java-version: '17'
 
       - name: Generate Gradle Wrapper
-        working-directory: sticker-app
         run: |
           curl -L https://services.gradle.org/distributions/gradle-8.2-bin.zip -o gradle.zip
           unzip -q gradle.zip
           ./gradle-8.2/bin/gradle wrapper --gradle-version 8.2
 
       - name: Build APK
-        working-directory: sticker-app
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
@@ -37,4 +35,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: StickerMaker-APK
-          path: sticker-app/app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/*.apk
