@@ -1,2 +1,0 @@
--keep class com.stickermaker.** { *; }
--keep class com.bumptech.glide.** { *; }
