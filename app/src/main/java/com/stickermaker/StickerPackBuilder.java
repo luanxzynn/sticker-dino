@@ -45,7 +45,9 @@ public class StickerPackBuilder {
                     String fname = "sticker_" + i + ".webp";
                     File   out   = new File(packDir, fname);
 
-                    if (item.animated) {
+                    if (item.video) {
+                        processVideo(item.sourceUri, out);
+                    } else if (item.animated) {
                         processAnimatedGif(item.sourceUri, out);
                     } else {
                         processStaticImage(item.sourceUri, out);
@@ -112,34 +114,11 @@ public class StickerPackBuilder {
      * um WebP estático (sem animação), avisando o usuário.
      */
     private void processAnimatedGif(Uri uri, File out) throws IOException {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-            convertGifToAnimatedWebP(uri, out);
-        } else {
-            // Fallback: 1º frame como WebP estático
-            processStaticImage(uri, out);
-            mainHandler.post(() ->
-                    Toast.makeText(ctx,
-                            "Dispositivo antigo: GIF convertido para figurinha estática.",
-                            Toast.LENGTH_LONG).show());
-        }
+        convertGifToAnimatedWebP(uri, out);
     }
 
     // API 28+ — decodifica o GIF frame a frame e encoda como WebP animado
-    @androidx.annotation.RequiresApi(28)
     private void convertGifToAnimatedWebP(Uri uri, File out) throws IOException {
-        android.graphics.ImageDecoder.Source src =
-                android.graphics.ImageDecoder.createSource(ctx.getContentResolver(), uri);
-
-        // Decodifica para Bitmap (modo estático: 1º frame apenas neste helper)
-        // Para animação completa usamos o AnimatedImageDrawable
-        android.graphics.drawable.AnimatedImageDrawable aid =
-                (android.graphics.drawable.AnimatedImageDrawable)
-                        android.graphics.ImageDecoder.decodeDrawable(src);
-
-        // Extrai os frames manualmente via ImageDecoder callback
-        // ImageDecoder não expõe diretamente frames; usamos Movie como alternativa
-
-        // Movie ainda funciona em API 28+ para GIFs
         InputStream is = ctx.getContentResolver().openInputStream(uri);
         android.graphics.Movie movie = android.graphics.Movie.decodeStream(is);
         if (is != null) is.close();
@@ -151,12 +130,12 @@ public class StickerPackBuilder {
         }
 
         // Coleta frames em intervalos de ~33 ms (≈30 fps, máximo 30 frames pro WhatsApp)
-        int duration  = movie.duration();
-        int frameStep = Math.max(33, duration / 30);
+        int duration  = Math.min(movie.duration(), 10_000);
+        int frameStep = Math.max(33, (duration + 29) / 30);
         List<Bitmap> frames    = new ArrayList<>();
         List<Integer> durations = new ArrayList<>();
 
-        for (int t = 0; t < duration; t += frameStep) {
+        for (int t = 0; t < duration && frames.size() < 30; t += frameStep) {
             movie.setTime(t);
             Bitmap frame = Bitmap.createBitmap(movie.width(), movie.height(),
                     Bitmap.Config.ARGB_8888);
@@ -167,21 +146,42 @@ public class StickerPackBuilder {
             durations.add(Math.min(frameStep, duration - t));
         }
 
-        // Encoda como WebP animado (API 30+) ou fallback WebP estático
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+        try {
             encodeAnimatedWebP(frames, durations, out);
-        } else {
-            // API 28-29: WebP estático com o 1º frame
-            try (FileOutputStream fos = new FileOutputStream(out)) {
-                frames.get(0).compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 90, fos);
-            }
-            mainHandler.post(() ->
-                    Toast.makeText(ctx,
-                            "Android 9/10: GIF convertido para figurinha estática (sem animação).",
-                            Toast.LENGTH_LONG).show());
+        } finally {
+            for (Bitmap b : frames) b.recycle();
         }
+    }
 
-        for (Bitmap b : frames) b.recycle();
+    private void processVideo(Uri uri, File out) throws IOException {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        List<Bitmap> frames = new ArrayList<>();
+        List<Integer> durations = new ArrayList<>();
+        try {
+            retriever.setDataSource(ctx, uri);
+            String value = retriever.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+            long durationMs = value == null ? 0 : Long.parseLong(value);
+            if (durationMs <= 0) throw new IOException("Não foi possível ler a duração do vídeo.");
+            long sampleDurationMs = Math.min(durationMs, 10_000L);
+            int frameStepMs = (int) Math.max(100L, (sampleDurationMs + 29) / 30);
+            for (long t = 0; t < sampleDurationMs && frames.size() < 30; t += frameStepMs) {
+                Bitmap frame = retriever.getFrameAtTime(t * 1000,
+                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                if (frame != null) {
+                    frames.add(resize512(frame));
+                    frame.recycle();
+                    durations.add((int) Math.min(frameStepMs, sampleDurationMs - t));
+                }
+            }
+            if (frames.isEmpty()) throw new IOException("Não foi possível extrair quadros do vídeo.");
+            encodeAnimatedWebP(frames, durations, out);
+        } catch (RuntimeException e) {
+            throw new IOException("Não foi possível converter o vídeo.", e);
+        } finally {
+            retriever.release();
+            for (Bitmap frame : frames) frame.recycle();
+        }
     }
 
     // API 30+ — Android 11 inclui AnimatedImageEncoder via ImageDecoder, mas
@@ -189,7 +189,6 @@ public class StickerPackBuilder {
     // robusta é usar o codec FFmpeg via script ou Animated WebP via NDK.
     // Aqui usamos a abordagem nativa disponível: salvar frames individuais
     // e construir o WebP animado com o formato RIFF manualmente.
-    @androidx.annotation.RequiresApi(30)
     private void encodeAnimatedWebP(List<Bitmap> frames, List<Integer> frameDurations, File out)
             throws IOException {
         // O Android SDK não expõe encoder de WebP animado em Java puro.
@@ -203,7 +202,9 @@ public class StickerPackBuilder {
 
         for (int i = 0; i < frames.size(); i++) {
             ByteArrayOutputStream frameBaos = new ByteArrayOutputStream();
-            frames.get(i).compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, frameBaos);
+            Bitmap.CompressFormat format = android.os.Build.VERSION.SDK_INT >= 30
+                    ? Bitmap.CompressFormat.WEBP_LOSSY : Bitmap.CompressFormat.WEBP;
+            frames.get(i).compress(format, 70, frameBaos);
             frameData.add(frameBaos.toByteArray());
             delays.add(frameDurations.get(i));
         }

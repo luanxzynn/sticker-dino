@@ -23,6 +23,7 @@ public class MainActivity extends AppCompatActivity {
     // Tipos de pick de arquivo
     private static final int PICK_IMAGE_REQUEST    = 1001;
     private static final int PICK_GIF_REQUEST      = 1002;
+    private static final int PICK_ANIMATED_REQUEST = 1003;
     private static final int PERMISSION_REQUEST    = 2001;
 
     private EditText etPackName, etAuthorName;
@@ -48,8 +49,8 @@ public class MainActivity extends AppCompatActivity {
         // Botão — adicionar imagem estática
         findViewById(R.id.btnAddSticker).setOnClickListener(v -> checkPermissionAndPick(false));
 
-        // Botão — adicionar GIF animado
-        findViewById(R.id.btnAddAnimated).setOnClickListener(v -> checkPermissionAndPick(true));
+        // O botão existente aceita GIF ou vídeo, sem acrescentar elementos à tela.
+        findViewById(R.id.btnAddAnimated).setOnClickListener(v -> openAnimatedPicker());
 
         // Botão — enviar pack ao WhatsApp
         findViewById(R.id.btnSendWhatsApp).setOnClickListener(v -> sendToWhatsApp());
@@ -100,12 +101,22 @@ public class MainActivity extends AppCompatActivity {
                 animated ? PICK_GIF_REQUEST : PICK_IMAGE_REQUEST);
     }
 
+    private void openAnimatedPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/gif", "video/*"});
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        startActivityForResult(Intent.createChooser(intent, "Escolher GIF ou vídeo"),
+                PICK_ANIMATED_REQUEST);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != Activity.RESULT_OK || data == null) return;
 
-        boolean animated = (requestCode == PICK_GIF_REQUEST);
+        boolean animated = requestCode == PICK_GIF_REQUEST || requestCode == PICK_ANIMATED_REQUEST;
         List<Uri> uris = new ArrayList<>();
 
         if (data.getClipData() != null) {
@@ -118,7 +129,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         for (Uri uri : uris) {
-            StickerItem item = new StickerItem(uri, animated);
+            String mimeType = getContentResolver().getType(uri);
+            boolean video = animated && mimeType != null && mimeType.startsWith("video/");
+            StickerItem item = new StickerItem(uri, animated, video);
             stickerList.add(item);
             adapter.notifyItemInserted(stickerList.size() - 1);
         }
